@@ -24,6 +24,8 @@ num_threads=1
 minibatch_size=512
 
 common_egs_dir=
+decode_nj=5
+
 ivector_extractor=exp/nnet2_online/extractor
 
 set -e
@@ -58,14 +60,16 @@ for line in sys.stdin.readlines():
     # -3 to get no_pitch feats
     for dir in train_scaled_hires train_hires dev_hires; do
         
-        steps/make_mfcc_pitch_online.sh --nj 10 --mfcc-config conf/mfcc_hires.conf --cmd "$train_cmd" data/$dir exp/make_hires/$dir mfcc_hires || exit 1
+        steps/make_mfcc_pitch_online.sh --nj 10 --mfcc-config conf/mfcc_hires.conf --cmd "$train_cmd" \
+            data/$dir exp/make_hires/$dir mfcc_hires || exit 1
         steps/compute_cmvn_stats.sh data/$dir exp/make_hires/$dir mfcc_hires || exit 1
         utils/fix_data_dir.sh data/$dir
 
         utils/data/limit_feature_dim.sh 0:39 data/$dir data/${dir}_nopitch || exit 1
     done
 
-    steps/compute_cmvn_stats.sh data/train_scaled_hires_nopitch exp/make_hires/train_scaled_hires_nopitch mfcc_hires  || exit 1
+    steps/compute_cmvn_stats.sh data/train_scaled_hires_nopitch \
+        exp/make_hires/train_scaled_hires_nopitch mfcc_hires  || exit 1
     # for ubm(10k/60k)
     utils/subset_data_dir.sh --first data/train_scaled_hires_nopitch 10000 data/train_scaled_hires_10k
     # LDA+MLLT
@@ -75,14 +79,14 @@ fi
 if [ $stage -le 2 ]; then
     echo "ALIGNING DATA[10K]..."
     # get original subset of data
-    utils/subset_data_dir.sh --first data/train 10000 data/train_10k
+    utils/subset_data_dir.sh --first data/train 30000 data/train_30k
     # align data use model triple-phone system
-    steps/align_si.sh --cmd $train_cmd --nj 10 data/train_10k data/lang exp/tri1 exp/tri1_10k_align || exit 1
+    steps/align_si.sh --cmd $train_cmd --nj 10 data/train_30k data/lang exp/tri1 exp/tri1_30k_align || exit 1
     
     echo "TRAINING LDA+MLLT[30K]..."
     # LDA+MLLT prepare for UBM
     steps/train_lda_mllt.sh --cmd "$train_cmd" --num-iters 13 --splice-opts "--left-context=3 --right-context=3" \
-        5500 90000 data/train_scaled_hires_30k data/lang exp/tri1_10k_align exp/nnet2_online/lda_mllt
+        5500 90000 data/train_scaled_hires_30k data/lang exp/tri1_30k_align exp/nnet2_online/lda_mllt
 
     echo "TRAINING UBM[10K]..."
     # use smaller data to get ubm
@@ -101,6 +105,7 @@ if [ $stage -le 3 ]; then
     echo "EXTRACTING IVECTORS ON TRAIN/DEV DATASET..."
     steps/online/nnet2/extract_ivectors_online.sh --cmd "$train_cmd" --nj 10 \
         data/train_hires_nopitch_max2 $ivector_extractor exp/nnet2_online/ivectors_train || exit 1
+
     steps/online/nnet2/extract_ivectors_online.sh --cmd "$train_cmd" --nj 10 \
         data/dev_hires_nopitch $ivector_extractor exp/nnet2_online/ivectors_dev || exit 1
 fi
@@ -128,11 +133,11 @@ if [ $stage -le 4 ]; then
         data/train_hires data/lang $ali_dir $exp_dir || exit 1
 fi
 
-if [ $stage -le 5 ] then
+if [ $stage -le 5 ]; then
     echo "DECODING AND EVALUATING..."
-    
+    # jobs could not be too large cause HCLG size
     # offline
-    steps/nnet2/decode.sh --nj 10 --cmd "$decode_cmd" \
+    steps/nnet2/decode.sh --nj $decode_nj --cmd "$decode_cmd" \
         --config conf/decode.config --online-ivector-dir exp/nnet2_online/ivectors_dev \
         $gph_dir data/dev_hires $exp_dir/decode || exit 1
 
@@ -140,10 +145,10 @@ if [ $stage -le 5 ] then
         --add-pitch true data/lang $ivector_extractor $exp_dir ${exp_dir}_online || exit 1
     # decoding online
     steps/online/nnet2/decode.sh --config conf/decode.config \
-        --cmd "$decode_cmd" --nj 10 $gph_dir data/dev_hires ${exp_dir}_online/decode || exit 1
+        --cmd "$decode_cmd" --nj $decode_nj $gph_dir data/dev_hires ${exp_dir}_online/decode || exit 1
     # decoding per-utt
     steps/online/nnet2/decode.sh --config conf/decode.config --per-utt true \
-        --cmd "$decode_cmd" --nj 10 $gph_dir data/dev_hires ${exp_dir}_online/decode_per_utt || exit 1
+        --cmd "$decode_cmd" --nj $decode_nj $gph_dir data/dev_hires ${exp_dir}_online/decode_per_utt || exit 1
 fi
 
 exit 0
