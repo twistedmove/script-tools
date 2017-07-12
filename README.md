@@ -9,3 +9,4 @@ A set of python/shell scripts for current works
 * CTC model training on digits dataset
 * modified nnet3-tdnn/nnet2 trainning scripts of kaldi
 * map alignments from phoneme to Chinese syllable [align-map](align-map)
+* draw ROC curves
